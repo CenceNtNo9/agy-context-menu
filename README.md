@@ -19,6 +19,9 @@ Cross-platform (**Windows & macOS**) right-click file enhancement plugin for **A
   - Supports concise context menus tailored to `existing_file`, `existing_directory`, `missing_path`, `untrusted_unc`, and `inline_code_text`, with optional panel toggles for file header, terminal, and composer mention.
   - Full backwards compatibility with v1 `renderer-client.cjs`, plus a ready-to-review Stage 2 renderer upgrade guide in [docs/STAGE2_RENDERER_UPGRADE.md](docs/STAGE2_RENDERER_UPGRADE.md).
 
+- **Copy Containing Folder Path (`复制所在文件夹路径`)**:
+  - Adds `Copy Containing Folder Path` as the top entry in `Copy More Formats ▸` for file targets (preserving drive root slashes like `C:\` on Windows), while automatically adapting directory targets to `Copy Folder Path`.
+
 ## Safe Installation & Deployment
 
 ### Prerequisites
@@ -31,18 +34,24 @@ npm install
 
 ### Safe Deploy Script (`scripts/install.mjs`)
 
-Because Windows locks loaded `.node` native addons (such as `koffi.node`) while a Sidecar process is alive, `scripts/install.mjs` performs an atomic rename lock pre-check before touching any files:
+Because Windows locks loaded `.node` native addons (such as `koffi.node`) while a Sidecar process is alive, `scripts/install.mjs` performs a real `openSync('r+')` write-handle lock pre-check and stages assets in `os.tmpdir()` with transactional rollback:
 
-1. Disable **Context Menu Plus** in Antigravity's **Customizations** panel so the Sidecar exits and releases `koffi.node`.
-2. Optionally pre-check locks without modifying files:
+1. **Full Install / Native Dependency Update**:
+   - Disable **Context Menu Plus** in Antigravity's **Customizations** panel so the Sidecar exits and releases `koffi.node`.
+   - Optionally pre-check locks without modifying files:
+     ```bash
+     node scripts/install.mjs --check-only
+     ```
+   - Deploy to `~/.gemini/config/plugins/agy-context-menu` (or pass `--target <dir>`):
+     ```bash
+     node scripts/install.mjs
+     ```
+   - Re-enable **Context Menu Plus** in **Customizations**.
+2. **Code-Only Hot Sync (when `koffi.node` SHA-256 is unchanged)**:
    ```bash
-   node scripts/install.mjs --check-only
+   node scripts/install.mjs --code-only
    ```
-3. Deploy to `~/.gemini/config/plugins/agy-context-menu` (or pass `--target <dir>`):
-   ```bash
-   node scripts/install.mjs
-   ```
-4. Re-enable **Context Menu Plus** in **Customizations**.
+   Then toggle **Context Menu Plus** OFF → ON once in **Customizations** to reload the Sidecar.
 
 For upgrading the injected chat UI script to v2 minimal menus and non-blocking confirmation cards, see [docs/STAGE2_RENDERER_UPGRADE.md](docs/STAGE2_RENDERER_UPGRADE.md).
 
