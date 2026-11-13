@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 import { loadConfig } from '../../../src/index.mjs';
 import { installPlugin, parseInstallArgs } from '../../../scripts/install.mjs';
 import { computeContainingDirPath, createSidecarRpcHandler, queryAgentConversationMetadata } from '../main.mjs';
@@ -654,4 +655,121 @@ test('P1: install.mjs parses args, rolls back on mid-swap failure, and aborts cl
     }
     rmSync(parentTmp, { recursive: true, force: true });
   }
+});
+
+test('renderer-client.cjs never hijacks external web/app links even when label contains slash (e.g. CenceNtNo9/agy-context-menu)', async () => {
+  const clientCode = readFileSync(path.join(REPO_ROOT, 'sidecars', 'menu', 'renderer-client.cjs'), 'utf8');
+  const listeners = {};
+  const rpcCalls = [];
+  let caretText = 'CenceNtNo9/agy-context-menu';
+
+  const win = {
+    __agyCtxMenuConfig: { binding: '__testBinding', platform: 'win32' },
+    electronNative: { showContextMenu: async () => null },
+    __testBinding: (raw) => {
+      const msg = JSON.parse(raw);
+      rpcCalls.push(msg);
+      win.__agyCtxMenuResolve(msg.id, { matched: false });
+    },
+    addEventListener: (type, fn) => {
+      listeners[type] = fn;
+    },
+    removeEventListener: () => {},
+    getSelection: () => '',
+    location: { pathname: '/' },
+    navigator: { language: 'zh-CN' },
+    innerWidth: 1280,
+    innerHeight: 800,
+    setTimeout,
+    clearTimeout,
+  };
+  win.window = win;
+
+  const doc = {
+    body: null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    caretRangeFromPoint: () =>
+      caretText
+        ? {
+            startContainer: { nodeType: 3, textContent: caretText },
+            startOffset: 3,
+          }
+        : null,
+  };
+  win.document = doc;
+
+  vm.runInNewContext(clientCode, win);
+  assert.equal(typeof listeners.contextmenu, 'function');
+
+  // 1. External GitHub <a href="https://..."> clicked directly on 'CenceNtNo9/agy-context-menu' text -> MUST NOT preventDefault!
+  const ghAnchor = {
+    nodeType: 1,
+    tagName: 'A',
+    textContent: 'CenceNtNo9/agy-context-menu',
+    getAttribute: (k) => (k === 'href' ? 'https://github.com/CenceNtNo9/agy-context-menu' : null),
+    closest: () => null,
+  };
+  let preventedExternal = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 100,
+    clientY: 100,
+    target: ghAnchor,
+    composedPath: () => [ghAnchor],
+    preventDefault: () => {
+      preventedExternal = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedExternal, false, 'External https:// link must pass through to official Open Link menu');
+  assert.equal(rpcCalls.length, 0);
+
+  // 2. React external link chip without <a> (props.href = https://...) -> MUST NOT preventDefault!
+  const reactChip = {
+    nodeType: 1,
+    tagName: 'SPAN',
+    textContent: 'CenceNtNo9/agy-context-menu',
+    __reactProps$abc: { href: 'https://github.com/CenceNtNo9/agy-context-menu' },
+    getAttribute: () => null,
+    closest: () => null,
+  };
+  let preventedReactExternal = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 100,
+    clientY: 100,
+    target: reactChip,
+    composedPath: () => [reactChip],
+    preventDefault: () => {
+      preventedReactExternal = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedReactExternal, false, 'React external link chip must pass through to official menu');
+
+  // 3. Explicit file:// <a href="file:///..."> -> MUST preventDefault and invoke resolve-target RPC!
+  caretText = 'install.mjs';
+  const fileAnchor = {
+    nodeType: 1,
+    tagName: 'A',
+    textContent: 'install.mjs',
+    getAttribute: (k) => (k === 'href' ? 'file:///C:/repo/scripts/install.mjs' : null),
+    closest: () => null,
+  };
+  let preventedFile = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 100,
+    clientY: 100,
+    target: fileAnchor,
+    composedPath: () => [fileAnchor],
+    preventDefault: () => {
+      preventedFile = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedFile, true, 'file:// link must be intercepted by Context Menu Plus');
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0].type, 'resolve-target');
 });

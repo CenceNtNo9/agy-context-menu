@@ -215,10 +215,19 @@
     return Boolean(target.closest('input, textarea, [contenteditable="true"], [role="textbox"]'));
   }
 
+  function isExternalUri(val) {
+    if (typeof val !== 'string') return false;
+    var s = val.trim();
+    if (!s || /^file:/i.test(s) || /^[a-zA-Z]:[\\/]/.test(s)) return false;
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]+:\/\//.test(s)) return true;
+    return /^(?:mailto|tel|sms|data|javascript|about|urn|blob|cid|news|sidecar|customization|plugin|conversation|vscode):/i.test(s);
+  }
+
   function isPathLikeString(val) {
     if (typeof val !== 'string') return false;
     var s = val.trim();
     if (!s || s.length > 2048 || /[\r\n]/.test(s)) return false;
+    if (isExternalUri(s)) return false;
     if (/^file:\/\//i.test(s)) return true;
     if (/^[a-zA-Z]:[\\/]/.test(s) || /^\\\\[^\\]+\\[^\\]+/.test(s)) return true;
     if (/^\/(?:Users|home|tmp|var|opt|etc|Volumes|Applications|mnt)\//.test(s)) return true;
@@ -227,7 +236,7 @@
     return false;
   }
 
-  function collectReactPropCandidates(el, out) {
+  function collectReactPropCandidates(el, out, linkState) {
     try {
       var keys = Object.keys(el);
       var propKey = null;
@@ -236,12 +245,16 @@
         if (keys[i].indexOf('__reactProps$') === 0) propKey = keys[i];
         else if (keys[i].indexOf('__reactFiber$') === 0) fiberKey = keys[i];
       }
-      var propNames = ['href', 'uri', 'fileUri', 'fileUrl', 'filePath', 'path', 'fullPath', 'targetUri', 'artifactPath', 'src'];
+      var propNames = ['href', 'url', 'externalUrl', 'linkUrl', 'uri', 'fileUri', 'fileUrl', 'filePath', 'path', 'fullPath', 'targetUri', 'artifactPath', 'src'];
+      var externalPropNames = { href: 1, url: 1, externalUrl: 1, linkUrl: 1, uri: 1, targetUri: 1 };
       var inspectProps = function (props) {
         if (!props || typeof props !== 'object') return;
         for (var j = 0; j < propNames.length; j++) {
-          var v = props[propNames[j]];
-          if (isPathLikeString(v)) {
+          var pName = propNames[j];
+          var v = props[pName];
+          if (linkState && externalPropNames[pName] && isExternalUri(v)) {
+            linkState.hasExternalLink = true;
+          } else if (isPathLikeString(v)) {
             out.push({ source: 'react-prop', value: v.trim(), linkText: (el.textContent || '').trim() });
           }
         }
@@ -326,6 +339,7 @@
     var path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
     var clickedCodeEl = null;
     var anchorEl = null;
+    var linkState = { hasExternalLink: false };
     var steps = 0;
 
     for (var i = 0; i < path.length && steps < 9; i++) {
@@ -339,6 +353,8 @@
         var href = node.getAttribute('href') || node.href;
         if (href && /^file:/i.test(href)) {
           add('explicit-uri', href, (node.textContent || '').trim());
+        } else if (isExternalUri(href)) {
+          linkState.hasExternalLink = true;
         }
       }
 
@@ -352,12 +368,14 @@
       var attrs = ['data-file-path', 'data-filepath', 'data-path', 'data-uri', 'data-href', 'title', 'aria-label'];
       for (var a = 0; a < attrs.length; a++) {
         var av = node.getAttribute(attrs[a]);
-        if (isPathLikeString(av)) {
+        if ((attrs[a] === 'data-uri' || attrs[a] === 'data-href' || attrs[a] === 'title') && isExternalUri(av)) {
+          linkState.hasExternalLink = true;
+        } else if (isPathLikeString(av)) {
           add(attrs[a] === 'data-uri' || /^file:/i.test(av) ? 'explicit-uri' : 'dom-attr', av, (node.textContent || '').trim());
         }
       }
 
-      collectReactPropCandidates(node, candidates);
+      collectReactPropCandidates(node, candidates, linkState);
 
       if ((tag === 'CODE' || tag === 'KBD') && !clickedCodeEl) {
         var codeText = (node.textContent || '').trim();
@@ -391,6 +409,7 @@
       anchorText: anchorEl ? (anchorEl.textContent || '').trim() : '',
       selectionText: selectionText,
       hasExplicitAnchor: Boolean(anchorEl && /^file:/i.test(anchorEl.getAttribute('href') || '')),
+      hasExternalLink: Boolean(linkState.hasExternalLink),
     };
   }
 
@@ -650,6 +669,12 @@
 
     // Do not hijack editable composer inputs unless user clicked an explicit file pill
     if (isInsideEditable(event.target) && !extracted.hasExplicitAnchor) {
+      return;
+    }
+
+    // Never hijack external web/app links (e.g. https://, mailto:, customization://, sidecar://)
+    // even when their display text contains '/' (like 'CenceNtNo9/agy-context-menu') or <code>
+    if (extracted.hasExternalLink && !extracted.hasExplicitAnchor) {
       return;
     }
 
