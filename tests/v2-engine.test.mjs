@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   WorkspaceRootResolver,
   buildContextMenu,
@@ -213,28 +214,34 @@ test('P3: allows \\\\?\\X:\\ and \\\\.\\Volume{GUID}\\ local device paths and tr
 });
 
 test('P4: empty workspaceRoots NEVER falls back to process.cwd() (main.mjs / package.json)', async () => {
-  // Confirm these files genuinely exist in process.cwd()
-  const cwd = process.cwd();
-  assert.ok(fs.existsSync(path.join(cwd, 'package.json')));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const prevCwd = process.cwd();
+  process.chdir(repoRoot);
+  try {
+    // Confirm these files genuinely exist in process.cwd()
+    assert.ok(fs.existsSync(path.join(process.cwd(), 'package.json')));
 
-  const syncPass = resolveTarget('package.json', { workspaceRoots: [] });
-  assert.equal(syncPass.kind, 'passthrough');
-  assert.equal(syncPass.reason, 'no_workspace_roots');
+    const syncPass = resolveTarget('package.json', { workspaceRoots: [] });
+    assert.equal(syncPass.kind, 'passthrough');
+    assert.equal(syncPass.reason, 'no_workspace_roots');
 
-  const inlineRes = await resolveBestTargetWithEngine({
-    candidates: [{ source: 'inline-code', value: '`main.mjs`' }],
-    workspaceRoots: [],
-    platform: 'win32',
-  });
-  assert.equal(inlineRes.kind, 'inline_code_text');
-  assert.equal(inlineRes.text, 'main.mjs');
+    const inlineRes = await resolveBestTargetWithEngine({
+      candidates: [{ source: 'inline-code', value: '`main.mjs`' }],
+      workspaceRoots: [],
+      platform: 'win32',
+    });
+    assert.equal(inlineRes.kind, 'inline_code_text');
+    assert.equal(inlineRes.text, 'main.mjs');
 
-  const caretRes = await resolveBestTargetWithEngine({
-    candidates: [{ source: 'caret-token', value: 'package.json' }],
-    workspaceRoots: [],
-    platform: 'win32',
-  });
-  assert.equal(caretRes.kind, 'passthrough');
+    const caretRes = await resolveBestTargetWithEngine({
+      candidates: [{ source: 'caret-token', value: 'package.json' }],
+      workspaceRoots: [],
+      platform: 'win32',
+    });
+    assert.equal(caretRes.kind, 'passthrough');
+  } finally {
+    process.chdir(prevCwd);
+  }
 });
 
 test('P4: filters untrusted UNC workspaceRoots & enforces multi-candidate priority', async () => {
@@ -534,13 +541,14 @@ test('P8 regression: NTFS ADS (::$DATA, :Zone.Identifier), trailing dots/spaces,
         workspaceRoots: [],
       });
       if (resolved.kind === 'existing_file') {
-        const strat = classifyOpenStrategy(resolved);
+        const strat = classifyOpenStrategy(resolved, {}, 'win32');
         assert.equal(strat.strategy, 'executable_intercept', `Expected intercept for suffix ${JSON.stringify(suffix)}`);
         assert.equal(strat.ext, '.vbs');
         const execRes = await executeMenuAction({
           actionId: 'open_file',
           target: resolved,
           confirmed: false,
+          platform: 'win32',
           platformAdapter: adapter,
         });
         assert.equal(execRes.status, 'confirmation_required');
@@ -554,20 +562,40 @@ test('P8 regression: NTFS ADS (::$DATA, :Zone.Identifier), trailing dots/spaces,
       });
       assert.notEqual(adsResolved.kind, 'existing_file');
       // Defense-in-depth if someone passes an existing_file target directly to classifyOpenStrategy
-      const directStrat = classifyOpenStrategy({
-        kind: 'existing_file',
-        normalizedPath: vbsPath + adsSuffix,
-      });
+      const directStrat = classifyOpenStrategy(
+        {
+          kind: 'existing_file',
+          normalizedPath: vbsPath + adsSuffix,
+        },
+        {},
+        'win32',
+      );
       assert.equal(directStrat.strategy, 'executable_intercept');
       assert.equal(directStrat.ext, '.vbs');
     }
 
-    const txtAdsStrat = classifyOpenStrategy({
-      kind: 'existing_file',
-      normalizedPath: path.join(tmpDir, 'note.txt::$DATA'),
-    });
+    const txtAdsStrat = classifyOpenStrategy(
+      {
+        kind: 'existing_file',
+        normalizedPath: 'C:\\Temp\\note.txt::$DATA',
+      },
+      {},
+      'win32',
+    );
     assert.equal(txtAdsStrat.strategy, 'executable_intercept');
     assert.equal(txtAdsStrat.reason, 'ntfs_ads_stream');
+
+    // macOS POSIX filenames containing a colon (`12:30_notes.md`) must NOT be misclassified as NTFS ADS
+    const macColonStrat = classifyOpenStrategy(
+      {
+        kind: 'existing_file',
+        normalizedPath: '/Users/demo/12:30_notes.md',
+      },
+      {},
+      'darwin',
+    );
+    assert.equal(macColonStrat.strategy, 'open_default');
+    assert.equal(macColonStrat.ext, '.md');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

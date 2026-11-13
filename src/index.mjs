@@ -120,7 +120,7 @@ export async function executeMenuAction({
 
   switch (actionId) {
     case 'open_file': {
-      const strategyInfo = classifyOpenStrategy(target, config);
+      const strategyInfo = classifyOpenStrategy(target, config, platform);
 
       if (strategyInfo.strategy === 'executable_intercept') {
         if (!confirmed) {
@@ -331,7 +331,7 @@ export function createFileActionEngine(options = {}) {
       return buildContextMenu(resolvedTarget, callConfig || config, callOptions);
     },
     classifyOpenStrategy(target) {
-      return classifyOpenStrategy(target, config);
+      return classifyOpenStrategy(target, config, options.platform);
     },
     executeMenuAction({ actionId, target, confirmed = false, platformAdapter, config: callConfig }) {
       return executeMenuAction({

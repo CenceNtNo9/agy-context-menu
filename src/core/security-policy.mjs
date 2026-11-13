@@ -275,6 +275,16 @@ function stripAdsAndTrailingWinNoise(targetPath) {
   return prefix + body;
 }
 
+function shouldApplyWinNtfsRules(targetPath, platform = process.platform) {
+  if (platform === 'win32') {
+    return true;
+  }
+  if (typeof targetPath !== 'string' || !targetPath) {
+    return false;
+  }
+  return /^(?:\\\\|[A-Za-z]:)/.test(targetPath) || /(?:::\$|:Zone\.Identifier\b)/i.test(targetPath);
+}
+
 /**
  * Classify how a resolved target should be opened across the 3-tier security & routing policy.
  * Tier 1: Executable / script extension -> requires confirmation
@@ -282,9 +292,10 @@ function stripAdsAndTrailingWinNoise(targetPath) {
  * Tier 3: Documents, media, or other files -> open with OS default handler
  * @param {Record<string, any>} target
  * @param {Record<string, any>} [config]
+ * @param {NodeJS.Platform} [platform]
  * @returns {Record<string, any>}
  */
-export function classifyOpenStrategy(target, config = {}) {
+export function classifyOpenStrategy(target, config = {}, platform = process.platform) {
   if (!target || typeof target !== 'object') {
     return { tier: 0, strategy: 'unsupported', requiresConfirmation: false };
   }
@@ -318,9 +329,9 @@ export function classifyOpenStrategy(target, config = {}) {
     };
   }
 
-  // Always compute extension from sanitized normalizedPath (stripping ADS and trailing dots/spaces)
-  const sanitizedForExt = stripAdsAndTrailingWinNoise(normalizedPath);
-  const ext = path.win32.extname(sanitizedForExt).toLowerCase();
+  const useWinRules = shouldApplyWinNtfsRules(normalizedPath, platform);
+  const sanitizedForExt = useWinRules ? stripAdsAndTrailingWinNoise(normalizedPath) : normalizedPath;
+  const ext = (useWinRules ? path.win32.extname(sanitizedForExt) : path.posix.extname(sanitizedForExt)).toLowerCase();
 
   if (isExecutableExtension(ext, config)) {
     return {
@@ -333,7 +344,7 @@ export function classifyOpenStrategy(target, config = {}) {
     };
   }
 
-  if (hasNtfsAdsStream(normalizedPath)) {
+  if (useWinRules && hasNtfsAdsStream(normalizedPath)) {
     return {
       tier: 1,
       strategy: 'executable_intercept',

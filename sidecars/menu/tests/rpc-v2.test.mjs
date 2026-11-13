@@ -395,14 +395,18 @@ test('P8: 3-tier routing, spoof resistance, one-time resolutionId confirmation &
     assert.equal(calls.at(-1).method, 'copyText');
     assert.equal(calls.at(-1).text, 'hello');
 
-    // 5. Untrusted UNC confirmation & rejection of reveal/terminal
+    // 5. Untrusted UNC confirmation & rejection of reveal/terminal (explicit win32 harness so macOS/Linux also test Win32 UNC policy)
+    const { handleRpc: win32Rpc, calls: win32Calls } = createTestHarness(tempDir, {
+      workspaceRoots: [],
+      platform: 'win32',
+    });
     const uncPath = '\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\share\\payload.txt';
-    const uncRes = await handleRpc('resolve-target', {
+    const uncRes = await win32Rpc('resolve-target', {
       candidates: [{ source: 'explicit-uri', value: uncPath }],
     });
     assert.equal(uncRes.target.kind, 'untrusted_unc');
 
-    const uncBlocked = await handleRpc('execute-action', {
+    const uncBlocked = await win32Rpc('execute-action', {
       actionId: 'open_untrusted_unc',
       resolutionId: uncRes.resolutionId,
     });
@@ -410,22 +414,62 @@ test('P8: 3-tier routing, spoof resistance, one-time resolutionId confirmation &
     assert.equal(uncBlocked.status, 'confirmation_required');
     assert.equal(uncBlocked.reason, 'untrusted_unc_path');
 
-    const uncTerminalRejected = await handleRpc('execute-action', {
+    const uncTerminalRejected = await win32Rpc('execute-action', {
       action: 'open-terminal',
       targetPath: uncPath,
     });
     assert.equal(uncTerminalRejected.ok, false);
     assert.equal(uncTerminalRejected.reason, 'untrusted_unc_rejected');
 
-    const uncConfirmed = await handleRpc('execute-action', {
+    const uncConfirmed = await win32Rpc('execute-action', {
       actionId: 'open_untrusted_unc',
       resolutionId: uncRes.resolutionId,
       confirmed: true,
       expectedTargetPath: uncBlocked.targetPath,
     });
     assert.equal(uncConfirmed.ok, true);
-    assert.equal(calls.at(-1).method, 'openDefault');
-    assert.equal(calls.at(-1).targetPath, uncBlocked.targetPath);
+    assert.equal(win32Calls.at(-1).method, 'openDefault');
+    assert.equal(win32Calls.at(-1).targetPath, uncBlocked.targetPath);
+
+    // 5b. Cross-platform darwin simulation (ensures macOS POSIX paths & colons work identically regardless of host OS)
+    const { handleRpc: darwinRpc, calls: darwinCalls } = createTestHarness(tempDir, {
+      workspaceRoots: ['/Users/demo/project'],
+      platform: 'darwin',
+      asyncStatImpl: async (p) => {
+        if (p === '/Users/demo/project/src/main.ts' || p === '/Users/demo/project/docs/12:30_notes.md') {
+          return {
+            isFile: () => true,
+            isDirectory: () => false,
+            size: 64,
+            mtimeMs: 1700000000000,
+          };
+        }
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+    const macTs = await darwinRpc('resolve-target', {
+      candidates: [{ source: 'inline-code', value: '`src/main.ts:18`' }],
+    });
+    assert.equal(macTs.target.kind, 'existing_file');
+    assert.equal(macTs.containingDir, '/Users/demo/project/src');
+    await darwinRpc('execute-action', {
+      actionId: 'open_file',
+      resolutionId: macTs.resolutionId,
+    });
+    assert.equal(darwinCalls.at(-1).method, 'openInEditor');
+
+    const macColonMd = await darwinRpc('resolve-target', {
+      candidates: [{ source: 'explicit-uri', value: 'file:///Users/demo/project/docs/12%3A30_notes.md' }],
+    });
+    assert.equal(macColonMd.target.kind, 'existing_file');
+    const macColonOpen = await darwinRpc('execute-action', {
+      actionId: 'open_file',
+      resolutionId: macColonMd.resolutionId,
+    });
+    assert.equal(macColonOpen.ok, true);
+    assert.equal(darwinCalls.at(-1).method, 'openDefault');
 
     // 6. Resolution cache bounded to 64 entries (oldest evicted)
     const ids = [];
