@@ -8,22 +8,24 @@ import {
   renameSync,
   rmSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const DEFAULT_TARGET_DIR = join(homedir(), '.gemini', 'config', 'plugins', 'agy-context-menu');
 
-const ROOT_FILES = [
-  'plugin.json',
+// Sync `plugin.json` LAST so Antigravity's live plugin directory watcher only activates
+// after `src/`, `node_modules/`, and `sidecars/menu/` are completely on disk.
+const ROOT_FILES_BEFORE_DIRS = [
   'README.md',
   'LICENSE',
   'config.default.jsonc',
   'package.json',
   'package-lock.json',
 ];
+const MANIFEST_FILE = 'plugin.json';
 
 const RETRYABLE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
@@ -166,7 +168,7 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
   const stagedEntries = [];
   mkdirSync(stagingDir, { recursive: true });
 
-  for (const file of ROOT_FILES) {
+  for (const file of ROOT_FILES_BEFORE_DIRS) {
     const src = join(sourceRoot, file);
     if (existsFn(src)) {
       cpSync(src, join(stagingDir, file), { force: true });
@@ -180,6 +182,12 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
       cpSync(srcDir, join(stagingDir, dirName), { recursive: true, force: true });
       stagedEntries.push({ relPath: dirName, label: `${dirName}/` });
     }
+  }
+
+  const nodeModulesSrc = join(sourceRoot, 'node_modules');
+  if (existsFn(nodeModulesSrc)) {
+    cpSync(nodeModulesSrc, join(stagingDir, 'node_modules'), { recursive: true, force: true });
+    stagedEntries.push({ relPath: 'node_modules', label: 'node_modules/' });
   }
 
   const sidecarSrc = join(sourceRoot, 'sidecars', 'menu');
@@ -201,10 +209,10 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
     stagedEntries.push({ relPath: join('sidecars', 'menu'), label: 'sidecars/menu/' });
   }
 
-  const nodeModulesSrc = join(sourceRoot, 'node_modules');
-  if (existsFn(nodeModulesSrc)) {
-    cpSync(nodeModulesSrc, join(stagingDir, 'node_modules'), { recursive: true, force: true });
-    stagedEntries.push({ relPath: 'node_modules', label: 'node_modules/' });
+  const manifestSrc = join(sourceRoot, MANIFEST_FILE);
+  if (existsFn(manifestSrc)) {
+    cpSync(manifestSrc, join(stagingDir, MANIFEST_FILE), { force: true });
+    stagedEntries.push({ relPath: MANIFEST_FILE, label: MANIFEST_FILE });
   }
 
   return stagedEntries;
@@ -213,8 +221,9 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
 /**
  * Safely deploy Context Menu Plus v2.0 to `<targetDir>`.
  * 1. Performs `openSync('r+')` lock pre-check on all `.node` files before touching destination.
- * 2. Stages all assets into a sibling `.staging-*` directory first.
- * 3. Swaps directory-by-directory into `<targetDir>` with `.bak-*` rollback on any failure.
+ * 2. Stages all assets into an isolated `os.tmpdir()` `.staging-*` directory (outside `~/.gemini/config/plugins/`
+ *    so Antigravity's directory watcher never scans half-built staging folders).
+ * 3. Places `plugin.json` LAST and swaps into `<targetDir>` with `.bak-*` rollback on any failure.
  *
  * @param {object} [options]
  * @returns {Promise<{ ok: boolean, checkOnly: boolean, targetDir: string, checkedBinaries: string[], syncedItems: string[] }>}
@@ -251,9 +260,11 @@ export async function installPlugin({
   }
 
   const stamp = `${Date.now()}-${process.pid}`;
-  const stagingDir = `${resolvedTarget}.staging-${stamp}`;
-  const backupDir = `${resolvedTarget}.bak-${stamp}`;
+  const targetBase = basename(resolvedTarget) || 'agy-context-menu';
+  const stagingDir = join(tmpdir(), `${targetBase}.staging-${stamp}`);
+  const backupDir = join(tmpdir(), `${targetBase}.bak-${stamp}`);
   const swapped = [];
+  const isDefaultRename = renameFn === renameSync;
 
   try {
     mkdirSync(dirname(resolvedTarget), { recursive: true });
@@ -275,11 +286,34 @@ export async function installPlugin({
 
         if (hadExisting) {
           mkdirSync(dirname(bakItem), { recursive: true });
-          await runWithBackoff(() => renameFn(destItem, bakItem), { maxRetries, baseDelayMs });
+          try {
+            await runWithBackoff(() => renameFn(destItem, bakItem), { maxRetries, baseDelayMs });
+          } catch (moveOutErr) {
+            if (isDefaultRename && moveOutErr?.code === 'EXDEV') {
+              cpSync(destItem, bakItem, { recursive: true, force: true });
+              rmSync(destItem, { recursive: true, force: true });
+            } else {
+              throw moveOutErr;
+            }
+          }
         }
 
         mkdirSync(dirname(destItem), { recursive: true });
-        await runWithBackoff(() => renameFn(stagedItem, destItem), { maxRetries, baseDelayMs });
+        try {
+          await runWithBackoff(() => renameFn(stagedItem, destItem), { maxRetries, baseDelayMs });
+        } catch (placeErr) {
+          if (
+            isDefaultRename &&
+            (placeErr?.code === 'EXDEV' || placeErr?.code === 'EPERM' || placeErr?.code === 'EACCES')
+          ) {
+            await runWithBackoff(
+              () => cpSync(stagedItem, destItem, { recursive: true, force: true }),
+              { maxRetries, baseDelayMs },
+            );
+          } else {
+            throw placeErr;
+          }
+        }
         swapRecord.placedNew = true;
       }
     } catch (swapErr) {
@@ -291,7 +325,11 @@ export async function installPlugin({
           }
           if (record.hadExisting && existsFn(record.bakItem)) {
             mkdirSync(dirname(record.destItem), { recursive: true });
-            renameSync(record.bakItem, record.destItem);
+            try {
+              renameSync(record.bakItem, record.destItem);
+            } catch {
+              cpSync(record.bakItem, record.destItem, { recursive: true, force: true });
+            }
           }
         } catch {
           // best-effort rollback for remaining entries
