@@ -94,6 +94,18 @@ function isWindowsStylePath(targetPath, platform) {
   return platform === 'win32' || /^[A-Za-z]:[\\/]/.test(targetPath) || /^\\\\/.test(targetPath);
 }
 
+export function computeContainingDirPath(targetPath, platform) {
+  if (typeof targetPath !== 'string' || !targetPath) {
+    return null;
+  }
+  const pathImpl = isWindowsStylePath(targetPath, platform) ? win32 : posix;
+  const dir = pathImpl.dirname(targetPath);
+  if (!dir || dir === '.' || dir === targetPath) {
+    return null;
+  }
+  return dir;
+}
+
 function formatV1ResolveFields(target, { platform, prefs, editors }) {
   if (!target) {
     return { matched: false };
@@ -133,6 +145,7 @@ function formatV1ResolveFields(target, { platform, prefs, editors }) {
     const targetPath = target.normalizedPath;
     const pathImpl = isWindowsStylePath(targetPath, platform) ? win32 : posix;
     const parentDir = target.parentDir || (isDirectory ? targetPath : pathImpl.dirname(targetPath));
+    const containingDir = isDirectory ? null : computeContainingDirPath(targetPath, platform);
     const nearestExistingDir = isDirectory
       ? targetPath
       : exists
@@ -146,6 +159,7 @@ function formatV1ResolveFields(target, { platform, prefs, editors }) {
       targetPath,
       fileName: target.fileName,
       parentDir,
+      containingDir,
       nearestExistingDir,
       line: target.line ?? undefined,
       endLine: target.endLine ?? undefined,
@@ -192,6 +206,7 @@ function mapActionId(rawAction, target) {
 function isPureTextCopyAction(rawAction) {
   if (!rawAction) return false;
   if (rawAction === 'copy-text' || rawAction === 'copy_text') return true;
+  if (rawAction === 'copy_parent_path') return true;
   return rawAction.startsWith('copy-') && rawAction !== 'copy-file';
 }
 
@@ -338,9 +353,10 @@ export function createSidecarRpcHandler({
       const adapter = platformAdapter || getDefaultPlatformAdapter();
       const hasResolutionId = typeof input?.resolutionId === 'string' && input.resolutionId.length > 0;
 
-      // Pure text copy (fallback inline copy or v1 copy-relative-path / copy-filename / copy-display-text)
+      // Pure text copy (fallback inline copy or v1 copy-parent-path / copy-relative-path / copy-filename / copy-display-text)
       if (isPureTextCopyAction(rawAction)) {
         let textToCopy = input.text;
+        const isParentCopy = rawAction === 'copy-parent-path' || rawAction === 'copy_parent_path';
         if (hasResolutionId) {
           const cached = getResolution(input.resolutionId);
           if (!cached) {
@@ -353,10 +369,14 @@ export function createSidecarRpcHandler({
           }
           resolutionCache.delete(input.resolutionId);
           if (textToCopy === undefined) {
-            textToCopy = cached.target?.text ?? cached.target?.normalizedPath ?? '';
+            textToCopy = isParentCopy
+              ? (computeContainingDirPath(cached.target?.normalizedPath, platform) ?? '')
+              : (cached.target?.text ?? cached.target?.normalizedPath ?? '');
           }
         } else if (textToCopy === undefined) {
-          textToCopy = input.targetPath ?? '';
+          textToCopy = isParentCopy
+            ? (computeContainingDirPath(input.targetPath, platform) ?? '')
+            : (input.targetPath ?? '');
         }
 
         try {

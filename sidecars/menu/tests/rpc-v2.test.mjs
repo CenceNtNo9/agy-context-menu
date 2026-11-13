@@ -8,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig } from '../../../src/index.mjs';
 import { installPlugin, parseInstallArgs } from '../../../scripts/install.mjs';
-import { createSidecarRpcHandler, queryAgentConversationMetadata } from '../main.mjs';
+import { computeContainingDirPath, createSidecarRpcHandler, queryAgentConversationMetadata } from '../main.mjs';
 import { PreferencesStore } from '../preferences.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -140,9 +140,26 @@ test('Bidirectional resolve-target returns v2 menu + v1 fields, respects prefere
     assert.equal(resTs.exists, true);
     assert.equal(resTs.isDirectory, false);
     assert.equal(resTs.targetPath, tsFile);
+    assert.equal(resTs.containingDir, srcDir);
     assert.equal(resTs.line, 42);
     assert.equal(resTs.relativePath, path.join('src', 'app.ts'));
     assert.ok(resTs.fileUrl.startsWith('file://'));
+
+    // Edge cases for computeContainingDirPath (drive root vs subdirectory vs root itself)
+    assert.equal(computeContainingDirPath('C:\\test.txt', 'win32'), 'C:\\');
+    assert.equal(computeContainingDirPath('C:\\', 'win32'), null);
+    assert.equal(computeContainingDirPath('C:\\repo\\scripts\\install.mjs', 'win32'), 'C:\\repo\\scripts');
+    assert.equal(computeContainingDirPath('/etc/hosts', 'darwin'), '/etc');
+    assert.equal(computeContainingDirPath('/hosts', 'darwin'), '/');
+    assert.equal(computeContainingDirPath('/', 'darwin'), null);
+
+    // Server-side copy-parent-path action copies containingDir cleanly
+    const copyParentRes = await handleRpc('execute-action', {
+      action: 'copy-parent-path',
+      targetPath: tsFile,
+    });
+    assert.equal(copyParentRes.ok, true);
+    assert.equal(copyParentRes.text, srcDir);
 
     // 2. Preferences toggles extend minimal menu + switch language
     await prefs.set({
@@ -166,6 +183,7 @@ test('Bidirectional resolve-target returns v2 menu + v1 fields, respects prefere
     });
     assert.equal(resDir.target.kind, 'existing_directory');
     assert.equal(resDir.isDirectory, true);
+    assert.equal(resDir.containingDir, null);
     assert.equal(resDir.exists, true);
     assert.equal(resDir.menu.items.length, 5); // with showHeader + showTerminal + showMention still enabled on prefs
 

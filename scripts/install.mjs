@@ -1,15 +1,17 @@
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   cpSync,
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -37,12 +39,15 @@ const RETRYABLE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 export function parseInstallArgs(argv = process.argv.slice(2)) {
   let targetDir = DEFAULT_TARGET_DIR;
   let checkOnly = false;
+  let codeOnly = false;
   let help = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--check-only') {
       checkOnly = true;
+    } else if (arg === '--code-only') {
+      codeOnly = true;
     } else if (arg === '--help' || arg === '-h') {
       help = true;
     } else if (arg === '--target') {
@@ -63,7 +68,7 @@ export function parseInstallArgs(argv = process.argv.slice(2)) {
     }
   }
 
-  return { targetDir, checkOnly, help };
+  return { targetDir, checkOnly, codeOnly, help };
 }
 
 /**
@@ -164,7 +169,28 @@ async function runWithBackoff(fn, { maxRetries = 3, baseDelayMs = 150 } = {}) {
   }
 }
 
-function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
+function sha256File(filePath) {
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+}
+
+function verifyNativeBinariesMatch(sourceRoot, targetDir) {
+  const srcNodeModules = join(sourceRoot, 'node_modules');
+  const dstNodeModules = join(targetDir, 'node_modules');
+  const srcBinaries = findNativeBinaries(srcNodeModules);
+  for (const srcBin of srcBinaries) {
+    const rel = relative(srcNodeModules, srcBin);
+    const dstBin = join(dstNodeModules, rel);
+    if (!existsSync(dstBin)) {
+      return { ok: false, reason: `目标目录缺少原生依赖: ${dstBin}` };
+    }
+    if (sha256File(srcBin) !== sha256File(dstBin)) {
+      return { ok: false, reason: `原生依赖版本已变更: ${dstBin}` };
+    }
+  }
+  return { ok: true, verified: srcBinaries.length };
+}
+
+function stagePluginAssets({ sourceRoot, stagingDir, existsFn, includeNodeModules = true }) {
   const stagedEntries = [];
   mkdirSync(stagingDir, { recursive: true });
 
@@ -185,7 +211,7 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
   }
 
   const nodeModulesSrc = join(sourceRoot, 'node_modules');
-  if (existsFn(nodeModulesSrc)) {
+  if (includeNodeModules && existsFn(nodeModulesSrc)) {
     cpSync(nodeModulesSrc, join(stagingDir, 'node_modules'), { recursive: true, force: true });
     stagedEntries.push({ relPath: 'node_modules', label: 'node_modules/' });
   }
@@ -220,18 +246,20 @@ function stagePluginAssets({ sourceRoot, stagingDir, existsFn }) {
 
 /**
  * Safely deploy Context Menu Plus v2.0 to `<targetDir>`.
- * 1. Performs `openSync('r+')` lock pre-check on all `.node` files before touching destination.
+ * 1. Performs `openSync('r+')` lock pre-check on all `.node` files before touching destination
+ *    (unless `codeOnly: true` and all `.node` binaries in `<targetDir>` already match SHA-256).
  * 2. Stages all assets into an isolated `os.tmpdir()` `.staging-*` directory (outside `~/.gemini/config/plugins/`
  *    so Antigravity's directory watcher never scans half-built staging folders).
  * 3. Places `plugin.json` LAST and swaps into `<targetDir>` with `.bak-*` rollback on any failure.
  *
  * @param {object} [options]
- * @returns {Promise<{ ok: boolean, checkOnly: boolean, targetDir: string, checkedBinaries: string[], syncedItems: string[] }>}
+ * @returns {Promise<{ ok: boolean, checkOnly: boolean, codeOnly?: boolean, targetDir: string, checkedBinaries: string[], syncedItems: string[] }>}
  */
 export async function installPlugin({
   sourceRoot = ROOT,
   targetDir = DEFAULT_TARGET_DIR,
   checkOnly = false,
+  codeOnly = false,
   openFn = openSync,
   closeFn = closeSync,
   renameFn = renameSync,
@@ -240,6 +268,80 @@ export async function installPlugin({
   baseDelayMs = 150,
 } = {}) {
   const resolvedTarget = resolve(targetDir);
+
+  if (codeOnly) {
+    const parity = verifyNativeBinariesMatch(sourceRoot, resolvedTarget);
+    if (!parity.ok) {
+      const err = new Error(
+        `${parity.reason}\n请先在 Customizations 关闭 Context Menu Plus 后运行不带 --code-only 的完整安装脚本。`,
+      );
+      err.code = 'NATIVE_BINARY_CHANGED';
+      throw err;
+    }
+
+    const stamp = `${Date.now()}-${process.pid}`;
+    const targetBase = basename(resolvedTarget) || 'agy-context-menu';
+    const stagingDir = join(tmpdir(), `${targetBase}.staging-${stamp}`);
+    const backupDir = join(tmpdir(), `${targetBase}.bak-${stamp}`);
+    const copied = [];
+
+    try {
+      const stagedEntries = await runWithBackoff(
+        () => stagePluginAssets({ sourceRoot, stagingDir, existsFn, includeNodeModules: false }),
+        { maxRetries, baseDelayMs },
+      );
+      mkdirSync(resolvedTarget, { recursive: true });
+
+      try {
+        for (const entry of stagedEntries) {
+          const stagedItem = join(stagingDir, entry.relPath);
+          const destItem = join(resolvedTarget, entry.relPath);
+          const bakItem = join(backupDir, entry.relPath);
+          const hadExisting = existsFn(destItem);
+          const rec = { destItem, bakItem, hadExisting, wroteNew: false };
+          copied.push(rec);
+
+          if (hadExisting) {
+            mkdirSync(dirname(bakItem), { recursive: true });
+            cpSync(destItem, bakItem, { recursive: true, force: true });
+          }
+          mkdirSync(dirname(destItem), { recursive: true });
+          await runWithBackoff(
+            () => cpSync(stagedItem, destItem, { recursive: true, force: true }),
+            { maxRetries, baseDelayMs },
+          );
+          rec.wroteNew = true;
+        }
+      } catch (copyErr) {
+        for (let i = copied.length - 1; i >= 0; i--) {
+          const rec = copied[i];
+          try {
+            if (rec.hadExisting && existsFn(rec.bakItem)) {
+              cpSync(rec.bakItem, rec.destItem, { recursive: true, force: true });
+            } else if (!rec.hadExisting && rec.wroteNew && existsFn(rec.destItem)) {
+              rmSync(rec.destItem, { recursive: true, force: true });
+            }
+          } catch {
+            // best-effort rollback
+          }
+        }
+        throw copyErr;
+      }
+
+      return {
+        ok: true,
+        checkOnly: false,
+        codeOnly: true,
+        targetDir: resolvedTarget,
+        checkedBinaries: [],
+        syncedItems: stagedEntries.map((e) => e.label),
+      };
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+      rmSync(backupDir, { recursive: true, force: true });
+    }
+  }
+
   const lockStatus = checkNativeBinaryLocks(resolvedTarget, { openFn, closeFn });
   if (!lockStatus.ok) {
     const err = new Error(lockStatus.message);
@@ -364,17 +466,21 @@ if (isDirectCliRun()) {
   try {
     const opts = parseInstallArgs();
     if (opts.help) {
-      console.log('Usage: node scripts/install.mjs [--target <dir>] [--check-only]');
+      console.log('Usage: node scripts/install.mjs [--target <dir>] [--check-only] [--code-only]');
       process.exit(0);
     }
     const result = await installPlugin({
       targetDir: opts.targetDir,
       checkOnly: opts.checkOnly,
+      codeOnly: opts.codeOnly,
     });
     if (result.checkOnly) {
       console.log(
         `预检通过 (${result.targetDir})：已检查 ${result.checkedBinaries.length} 个原生 .node 文件，无进程文件锁占用。`,
       );
+    } else if (result.codeOnly) {
+      console.log(`已热同步纯代码资产至: ${result.targetDir}（原生 .node SHA-256 校验一致，无需覆盖）`);
+      console.log(`同步内容: ${result.syncedItems.join(', ')}`);
     } else {
       console.log(`已安全部署 agy-context-menu v2.0 至: ${result.targetDir}`);
       console.log(`同步内容: ${result.syncedItems.join(', ')}`);

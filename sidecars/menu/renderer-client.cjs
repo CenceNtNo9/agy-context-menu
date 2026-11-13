@@ -525,10 +525,21 @@
     });
     items.push({
       id: 'copy-path',
-      label: zh ? '复制文件路径' : 'Copy File Path',
+      label: resolved.isDirectory
+        ? (zh ? '复制文件夹路径' : 'Copy Folder Path')
+        : (zh ? '复制文件路径' : 'Copy File Path'),
     });
 
     var moreCopy = [];
+    var containingDir = !resolved.isDirectory
+      ? (resolved.containingDir || (resolved.parentDir && resolved.parentDir !== resolved.targetPath ? resolved.parentDir : null))
+      : null;
+    if (containingDir) {
+      moreCopy.push({
+        id: 'copy-parent-path',
+        label: zh ? '复制所在文件夹路径' : 'Copy Containing Folder Path',
+      });
+    }
     if (resolved.relativePath) {
       moreCopy.push({
         id: 'copy-relative-path',
@@ -587,8 +598,12 @@
       }
     }
 
+    var resolvedContainingDir = !resolved.isDirectory
+      ? (resolved.containingDir || (resolved.parentDir && resolved.parentDir !== resolved.targetPath ? resolved.parentDir : ''))
+      : '';
     var textMap = {
       'copy-path': resolved.targetPath,
+      'copy-parent-path': resolvedContainingDir,
       'copy-relative-path': resolved.relativePath || resolved.targetPath,
       'copy-path-with-line': (resolved.relativePath || resolved.targetPath) + (resolved.line ? ':' + resolved.line : ''),
       'copy-filename': resolved.fileName,
@@ -615,7 +630,13 @@
     if (actionId === 'copy-file') {
       showToast(zh ? '已复制文件实体，可直接粘贴发送' : 'Copied file to clipboard');
     } else if (actionId === 'copy-path') {
-      showToast(zh ? '已复制文件路径' : 'Copied file path');
+      showToast(
+        resolved.isDirectory
+          ? (zh ? '已复制文件夹路径' : 'Copied folder path')
+          : (zh ? '已复制文件路径' : 'Copied file path')
+      );
+    } else if (actionId === 'copy-parent-path') {
+      showToast(zh ? '已复制所在文件夹路径' : 'Copied containing folder path');
     } else if (actionId.indexOf('copy-') === 0) {
       showToast(zh ? '已复制到剪贴板' : 'Copied to clipboard');
     } else if (actionId === 'reveal' && !resolved.exists) {
