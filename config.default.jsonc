@@ -1,0 +1,76 @@
+{
+  // 默认高危可执行与脚本文件后缀（首次打开必须拦截并要求显式二次确认）
+  "executableExtensions": [
+    ".exe", ".msi", ".bat", ".cmd", ".ps1",
+    ".vbs", ".vbe", ".jse", ".wsf", ".wsh",
+    ".hta", ".reg", ".scr", ".com", ".pif",
+    ".lnk", ".msc", ".cpl", ".command", ".pkg", ".dmg",
+    ".url", ".chm", ".jar", ".appref-ms", ".application",
+    ".msp", ".msix", ".msixbundle", ".appx", ".appxbundle",
+    ".appinstaller", ".scf", ".inf", ".settingcontent-ms", ".xll",
+    ".ws", ".wsc", ".psm1", ".psd1", ".iso", ".img",
+    ".vhd", ".vhdx", ".library-ms", ".search-ms", ".diagcab",
+    ".gadget", ".hlp"
+  ],
+
+  // 源码与结构化文本后缀（打开时走第 2 层：优先探测代码编辑器，无编辑器时回退纯文本查看器）
+  "sourceExtensions": [
+    ".ts", ".tsx", ".mts", ".cts",
+    ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".pyw", ".rs", ".go", ".java", ".kt", ".kts",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh",
+    ".cs", ".fs", ".vb", ".vue", ".svelte", ".astro",
+    ".sh", ".bash", ".zsh", ".fish",
+    ".yaml", ".yml", ".toml", ".json", ".jsonc", ".json5",
+    ".sql", ".css", ".scss", ".sass", ".less",
+    ".xml",
+    ".mdx", ".txt", ".log", ".ini", ".cfg", ".conf", ".env",
+    ".rb", ".php", ".lua", ".r", ".swift", ".dart", ".zig", ".nim",
+    ".ex", ".exs", ".erl", ".clj", ".graphql", ".gql", ".proto", ".prisma"
+  ],
+
+  // 额外用于识别相对路径形态的常见非源码文件后缀（如文档、媒体、压缩包、无行号预览文件）
+  "knownPathExtensions": [
+    ".md", ".html", ".htm", ".svg",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff",
+    ".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".flac", ".ogg",
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+    ".db", ".sqlite", ".sqlite3", ".wasm", ".bin", ".dat", ".lock"
+  ],
+
+  // 允许直接 stat 的本地/WSL UNC 主机白名单（其余 UNC 主机与设备路径一律 Pre-stat 拦截防 NTLM 泄露）
+  "trustedUncHosts": [
+    "wsl.localhost",
+    "wsl$",
+    "localhost",
+    "127.0.0.1"
+  ],
+
+  // 探测代码编辑器的优先顺序
+  "editorPreferenceOrder": [
+    "vscode",
+    "vscode-insiders",
+    "cursor",
+    "windsurf",
+    "zed",
+    "sublime",
+    "notepadpp"
+  ],
+
+  // 菜单默认语言（'auto' | 'zh-CN' | 'en'）
+  "language": "auto",
+
+  // 异步文件系统 stat 超时保护（毫秒），防止离线网络盘或休眠 \\wsl.localhost 卡死事件循环
+  "statTimeoutMs": 1500,
+
+  // 可选自定义编辑器覆盖（示例：{ "command": "C:\\Tools\\code.exe", "argsTemplate": ["--goto", "{file}:{line}:{column}"] }）
+  "customEditor": null,
+
+  // 本地服务默认配置
+  "server": {
+    "host": "127.0.0.1",
+    "port": 0,
+    "maxBodyBytes": 65536
+  }
+}

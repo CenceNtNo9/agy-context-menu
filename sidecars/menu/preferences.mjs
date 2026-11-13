@@ -8,10 +8,23 @@ export const DEFAULT_PREFERENCES = {
   customEditorCommand: '',
   preferredTerminal: 'auto',
   altClickOpenDefault: true,
+  minimalMenuShowHeader: false,
+  minimalMenuShowTerminal: false,
+  minimalMenuShowMention: false,
 };
 
 const ALLOWED_LANGUAGES = new Set(['auto', 'zh-CN', 'en']);
-const ALLOWED_EDITORS = new Set(['auto', 'vscode', 'vscode-insiders', 'cursor', 'windsurf', 'zed', 'sublime', 'custom']);
+const ALLOWED_EDITORS = new Set([
+  'auto',
+  'vscode',
+  'vscode-insiders',
+  'cursor',
+  'windsurf',
+  'zed',
+  'sublime',
+  'notepadpp',
+  'custom',
+]);
 const ALLOWED_TERMINALS = new Set(['auto', 'wt', 'powershell', 'terminal', 'iterm', 'warp', 'ghostty']);
 
 function sanitizePreferences(raw, base = DEFAULT_PREFERENCES) {
@@ -33,6 +46,15 @@ function sanitizePreferences(raw, base = DEFAULT_PREFERENCES) {
   }
   if (typeof raw.altClickOpenDefault === 'boolean') {
     next.altClickOpenDefault = raw.altClickOpenDefault;
+  }
+  if (typeof raw.minimalMenuShowHeader === 'boolean') {
+    next.minimalMenuShowHeader = raw.minimalMenuShowHeader;
+  }
+  if (typeof raw.minimalMenuShowTerminal === 'boolean') {
+    next.minimalMenuShowTerminal = raw.minimalMenuShowTerminal;
+  }
+  if (typeof raw.minimalMenuShowMention === 'boolean') {
+    next.minimalMenuShowMention = raw.minimalMenuShowMention;
   }
   return next;
 }

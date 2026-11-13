@@ -1,0 +1,19 @@
+{
+  "name": "agy-context-menu",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Context Menu Plus v2.0 - Native FFI file actions engine, smart context-menu state machine, and security router for Antigravity Desktop",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs sidecars/menu/tests/*.test.mjs",
+    "test:engine": "node --test tests/v2-engine.test.mjs",
+    "test:sidecar": "node --test sidecars/menu/tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "koffi": "^3.3.8"
+  }
+}

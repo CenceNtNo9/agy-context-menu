@@ -1,51 +1,69 @@
-# Context Menu Plus (`agy-context-menu`)
+# Context Menu Plus (`agy-context-menu` v2.0)
 
-Cross-platform (**Windows & macOS**) right-click file enhancement plugin for **Antigravity Desktop (2.0)** chat canvases.
+Cross-platform (**Windows & macOS**) right-click file enhancement plugin for **Antigravity Desktop (2.0)** chat canvases, powered by a `<1ms` native Win32 FFI engine (`koffi`) and 3-tier security routing.
 
-## Features
+## What's New in v2.0
 
-- **Reveal in Explorer / Finder** (`在资源管理器中显示` / `在“访达”中显示`):
-  - Uses Antigravity's native `revealInFilePicker` or Win32 `SHOpenFolderAndSelectItems` (reuses already-open Explorer windows) / macOS `open -R`.
-  - Automatically falls back to opening the nearest existing parent directory if a referenced file was deleted or moved.
-- **Open with Default App** (`打开文件（默认方式）`): Opens documents, images, videos, and scripts with your OS default handler.
-- **Open in Code Editor at Line** (`在 VS Code / Cursor / Windsurf / Zed / Sublime Text 中打开`): Preserves `#L42-L58` / `:42:10` line & column anchors.
-- **Open in Terminal Here** (`在此处打开终端`): Launches Windows Terminal / PowerShell on Windows, or Terminal / iTerm2 / Ghostty / Warp on macOS.
-- **Copy File (Entity) vs Copy File Path** (`复制文件` 与 `复制文件路径`):
-  - **Copy File**: Writes the actual file object (`CF_HDROP` via STA PowerShell on Windows; `NSPasteboard` + `NSURL` via JXA on macOS) so you can paste (`Ctrl+V` / `Cmd+V`) directly into WeChat, Feishu, Slack, Explorer, or Finder.
-  - **Copy File Path**: Writes clean native paths (`C:\...` or `/Users/...`) with additional formats (`Relative Path`, `Path:Line`, `File Name`, `Display Text`) in a submenu.
-- **Smart Non-Link Path & Inline Code Support**:
-  - Recognizes `file://` links, React file chips, media previews, inline `` `src/foo.ts:42` `` tokens, and stack traces against active conversation workspace roots.
-  - Fixes grayed-out Copy on inline code spans by providing a working `Copy Text` menu.
-- **Quick Modifiers**:
-  - `Alt + Click` (`Option + Click` on macOS): Open file with default app.
-  - `Ctrl + Alt + Click` (`Cmd + Option + Click` on macOS): Reveal in Explorer / Finder.
-  - `Shift + Right-Click`: Bypass directly to default menu.
+- **Zero-PowerShell Native Win32 FFI (`<1ms`)**:
+  - Uses `koffi` (`shell32.dll`, `user32.dll`, `kernel32.dll`) directly inside the Sidecar process for `SHOpenFolderAndSelectItems`, `ShellExecuteW`, `CF_HDROP` file entity copy, and `CF_UNICODETEXT` copy — eliminating slow `powershell.exe` child spawns.
+  - Automatically falls back to `os-actions.mjs` if a native binary is unavailable, and surfaces active/degraded status in the Aux Pane settings panel.
+  - macOS continues to use `/usr/bin/open -R`, JXA `NSPasteboard`, and `pbcopy`.
+- **3-Tier Smart Open & Security Policy**:
+  - **Tier 1 (Executable / Untrusted UNC Interception)**: High-risk extensions (`.exe`, `.bat`, `.cmd`, `.ps1`, `.vbs`, `.reg`, `.dmg`, etc.) and external UNC paths (`\\server\share`, `\\?\GLOBALROOT\Device\Mup\...`, WebDAV `@SSL`) are blocked before any `stat` or execution, requiring explicit confirmation with one-time `resolutionId` replay protection.
+  - **Tier 2 (Code Editor Routing)**: Source code extensions (`.ts`, `.js`, `.py`, `.rs`, `.go`, `.json`, etc.) and line-anchored links (`#L42`, `:42:10`, `file.cs(42,10)`) automatically open in your configured code editor (`VS Code`, `Cursor`, `Windsurf`, `Zed`, `Sublime Text`, `Notepad++`, or plain-text viewer fallback) — never via WScript or media players.
+  - **Tier 3 (Default App)**: Documents, images, PDFs, and non-line-anchored Markdown/HTML open with the OS default handler.
+- **Non-Blocking Async Workspace Resolution**:
+  - Asynchronous `stat` and `agentapi` metadata lookup with timeout guards prevent offline mapped drives or sleeping WSL shares from stalling the Sidecar event loop.
+  - Strictly avoids falling back to `process.cwd()` when no conversation workspace root exists.
+- **5-State Minimal Menu Engine (`4 / 2 / 2 / 1`)**:
+  - Supports concise context menus tailored to `existing_file`, `existing_directory`, `missing_path`, `untrusted_unc`, and `inline_code_text`, with optional panel toggles for file header, terminal, and composer mention.
+  - Full backwards compatibility with v1 `renderer-client.cjs`, plus a ready-to-review Stage 2 renderer upgrade guide in [docs/STAGE2_RENDERER_UPGRADE.md](docs/STAGE2_RENDERER_UPGRADE.md).
 
-## Installation (Windows & macOS)
+## Safe Installation & Deployment
 
-### Option A — Direct Git Clone (Recommended)
+### Prerequisites
 
-- **macOS (Terminal)**:
-  ```bash
-  git clone https://github.com/CenceNtNo9/agy-context-menu.git ~/.gemini/config/plugins/agy-context-menu
-  ```
-- **Windows (PowerShell)**:
-  ```powershell
-  git clone https://github.com/CenceNtNo9/agy-context-menu.git "$HOME\.gemini\config\plugins\agy-context-menu"
-  ```
-
-### Option B — From Local Source Checkout
+Install dependencies in the source repository (never directly inside the live running plugin folder):
 
 ```bash
-node scripts/install.mjs
+npm install
 ```
 
-Both methods deploy the plugin to `~/.gemini/config/plugins/agy-context-menu` without modifying `app.asar`.
+### Safe Deploy Script (`scripts/install.mjs`)
+
+Because Windows locks loaded `.node` native addons (such as `koffi.node`) while a Sidecar process is alive, `scripts/install.mjs` performs an atomic rename lock pre-check before touching any files:
+
+1. Disable **Context Menu Plus** in Antigravity's **Customizations** panel so the Sidecar exits and releases `koffi.node`.
+2. Optionally pre-check locks without modifying files:
+   ```bash
+   node scripts/install.mjs --check-only
+   ```
+3. Deploy to `~/.gemini/config/plugins/agy-context-menu` (or pass `--target <dir>`):
+   ```bash
+   node scripts/install.mjs
+   ```
+4. Re-enable **Context Menu Plus** in **Customizations**.
+
+For upgrading the injected chat UI script to v2 minimal menus and non-blocking confirmation cards, see [docs/STAGE2_RENDERER_UPGRADE.md](docs/STAGE2_RENDERER_UPGRADE.md).
 
 ## Testing
 
+Run all engine and sidecar tests under standard Node.js:
+
+```bash
+npm test
+```
+
+Or run Sidecar RPC/installer tests only:
+
 ```bash
 node --test sidecars/menu/tests/*.test.mjs
+```
+
+On Windows with Antigravity installed, you can also verify `koffi` under the host Electron `RunAsNode` runtime:
+
+```powershell
+& "$env:APPDATA\Antigravity\bin\agy-node.cmd" --test tests/*.test.mjs sidecars/menu/tests/*.test.mjs
 ```
 
 ## License

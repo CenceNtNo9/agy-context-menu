@@ -2,7 +2,7 @@
   "name": "agy-context-menu",
   "displayName": "Context Menu Plus",
   "description": "Right-click file actions for Antigravity Desktop chat on Windows & macOS: reveal in Explorer/Finder, open with default app or code editor at line, copy file entity or path, open terminal, and mention in composer.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": {
     "name": "CenceNtNo9",
     "url": "https://github.com/CenceNtNo9"

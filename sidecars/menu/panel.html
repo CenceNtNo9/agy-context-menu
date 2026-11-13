@@ -27,29 +27,51 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      flex-wrap: wrap;
+      gap: 8px;
       margin-bottom: 14px;
+    }
+    .title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
     }
     .title {
       font-size: 15px;
       font-weight: 600;
       margin: 0;
     }
+    .version-tag {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .badges {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       padding: 3px 9px;
       border-radius: 999px;
       font-size: 11px;
       background: rgba(56, 189, 248, 0.14);
       border: 1px solid rgba(56, 189, 248, 0.3);
       color: #7dd3fc;
+      white-space: nowrap;
     }
     .badge.ok {
       background: rgba(34, 197, 94, 0.14);
       border-color: rgba(34, 197, 94, 0.35);
       color: #86efac;
+    }
+    .badge.warn {
+      background: rgba(245, 158, 11, 0.16);
+      border-color: rgba(245, 158, 11, 0.38);
+      color: #fcd34d;
     }
     .badge.off {
       background: rgba(239, 68, 68, 0.14);
@@ -93,6 +115,11 @@
       color: var(--muted);
       margin-top: 6px;
     }
+    .sub-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 10px 0;
+    }
     .recent-list {
       margin: 0;
       padding: 0;
@@ -118,13 +145,20 @@
 </head>
 <body>
   <div class="header">
-    <h1 class="title">Context Menu Plus</h1>
-    <span id="status-badge" class="badge">Connecting...</span>
+    <div class="title-group">
+      <h1 class="title">Context Menu Plus</h1>
+      <span id="engine-version" class="version-tag">v2.0</span>
+    </div>
+    <div class="badges">
+      <span id="engine-badge" class="badge">Engine Init...</span>
+      <span id="status-badge" class="badge">Connecting...</span>
+    </div>
   </div>
 
   <div class="card">
-    <h2>连接状态</h2>
+    <h2>连接与底层引擎状态</h2>
     <div id="status-detail" class="hint">正在检查 Antigravity 桌面渲染器...</div>
+    <div id="engine-detail" class="hint"></div>
   </div>
 
   <div class="card">
@@ -143,6 +177,10 @@
         <option value="auto">自动检测</option>
       </select>
     </div>
+    <div id="custom-editor-row" class="row" style="display:none;">
+      <label for="pref-custom-editor">自定义编辑器命令</label>
+      <input id="pref-custom-editor" type="text" placeholder="例如 code.exe 或 /usr/local/bin/hx" />
+    </div>
     <div class="row">
       <label for="pref-terminal">首选终端</label>
       <select id="pref-terminal">
@@ -153,8 +191,23 @@
       <label for="pref-alt">Alt/Option + 左键直达</label>
       <input id="pref-alt" type="checkbox" />
     </div>
+
+    <div class="sub-divider"></div>
+
+    <div class="row">
+      <label for="pref-show-header">极简菜单显示文件信息头</label>
+      <input id="pref-show-header" type="checkbox" />
+    </div>
+    <div class="row">
+      <label for="pref-show-terminal">极简菜单附加「在此处打开终端」</label>
+      <input id="pref-show-terminal" type="checkbox" />
+    </div>
+    <div class="row">
+      <label for="pref-show-mention">极简菜单附加「引用到输入框」</label>
+      <input id="pref-show-mention" type="checkbox" />
+    </div>
     <div class="hint">
-      提示：按住 <b>Shift + 右键</b> 可临时调用系统原始菜单；<b>Alt/Option + 点击</b>文件链接直接用默认程序打开，<b>Ctrl+Alt / Cmd+Option + 点击</b>在文件夹中定位。
+      提示：按住 <b>Shift + 右键</b> 可临时调用系统原始菜单；源码文件与带行号链接将自动分流到代码编辑器打开，高危脚本及外部 UNC 路径会在首次执行时触发安全拦截确认。
     </div>
   </div>
 
@@ -184,11 +237,19 @@
       }
 
       const badge = document.getElementById('status-badge');
+      const engineBadge = document.getElementById('engine-badge');
+      const engineVersion = document.getElementById('engine-version');
       const detail = document.getElementById('status-detail');
+      const engineDetail = document.getElementById('engine-detail');
       const langSel = document.getElementById('pref-lang');
       const editorSel = document.getElementById('pref-editor');
+      const customEditorRow = document.getElementById('custom-editor-row');
+      const customEditorInput = document.getElementById('pref-custom-editor');
       const termSel = document.getElementById('pref-terminal');
       const altCheck = document.getElementById('pref-alt');
+      const showHeaderCheck = document.getElementById('pref-show-header');
+      const showTerminalCheck = document.getElementById('pref-show-terminal');
+      const showMentionCheck = document.getElementById('pref-show-mention');
       const recentList = document.getElementById('recent-list');
 
       async function savePref(patch) {
@@ -198,10 +259,74 @@
         });
       }
 
+      function syncCustomEditorVisibility() {
+        customEditorRow.style.display = editorSel.value === 'custom' ? 'flex' : 'none';
+      }
+
       langSel.addEventListener('change', () => savePref({ language: langSel.value }));
-      editorSel.addEventListener('change', () => savePref({ preferredEditor: editorSel.value }));
+      editorSel.addEventListener('change', () => {
+        syncCustomEditorVisibility();
+        savePref({ preferredEditor: editorSel.value });
+      });
+      customEditorInput.addEventListener('change', () => savePref({ customEditorCommand: customEditorInput.value }));
       termSel.addEventListener('change', () => savePref({ preferredTerminal: termSel.value }));
       altCheck.addEventListener('change', () => savePref({ altClickOpenDefault: altCheck.checked }));
+      showHeaderCheck.addEventListener('change', () => savePref({ minimalMenuShowHeader: showHeaderCheck.checked }));
+      showTerminalCheck.addEventListener('change', () => savePref({ minimalMenuShowTerminal: showTerminalCheck.checked }));
+      showMentionCheck.addEventListener('change', () => savePref({ minimalMenuShowMention: showMentionCheck.checked }));
+
+      function renderAdapterBadge(status) {
+        if (status.engineVersion) {
+          engineVersion.textContent = `v${status.engineVersion}`;
+        }
+        const adapter = status.adapterStatus || null;
+        if (!adapter) {
+          engineBadge.className = 'badge';
+          engineBadge.textContent = status.platform === 'win32' ? 'Win32 Engine' : 'Native Engine';
+          engineDetail.textContent = '';
+          return;
+        }
+
+        const isNativeFfi =
+          adapter.mode === 'koffi_native' ||
+          adapter.mode === 'native-ffi' ||
+          adapter.native === true ||
+          adapter.koffiLoaded === true;
+
+        const isDegraded =
+          adapter.mode === 'powershell_fallback' ||
+          adapter.mode === 'fallback' ||
+          adapter.mode === 'degraded' ||
+          adapter.degraded === true;
+
+        if (status.platform === 'win32') {
+          if (isDegraded) {
+            engineBadge.className = 'badge warn';
+            engineBadge.textContent = '降级模式 (OS Fallback)';
+            engineDetail.textContent = adapter.degradeReason || adapter.reason || adapter.error || 'koffi 原生 FFI 加载失败，已自动降级为 PowerShell/OS 后备执行。';
+          } else if (isNativeFfi) {
+            engineBadge.className = 'badge ok';
+            engineBadge.textContent = 'Win32 koffi Native FFI (<1ms)';
+            engineDetail.textContent = adapter.detail || '已启用 Shell32/User32 原生 FFI，文件定位与剪贴板操作零进程派生。';
+          } else {
+            engineBadge.className = 'badge';
+            engineBadge.textContent = adapter.label || 'Win32 Engine';
+            engineDetail.textContent = adapter.detail || '';
+          }
+          return;
+        }
+
+        if (status.platform === 'darwin' || adapter.mode === 'darwin_native') {
+          engineBadge.className = 'badge ok';
+          engineBadge.textContent = 'macOS Native (open / JXA)';
+          engineDetail.textContent = adapter.detail || '已启用 macOS 原生 Finder / NSPasteboard 适配器。';
+          return;
+        }
+
+        engineBadge.className = 'badge';
+        engineBadge.textContent = adapter.label || `${status.platform} Adapter`;
+        engineDetail.textContent = adapter.detail || '';
+      }
 
       async function refresh() {
         try {
@@ -223,6 +348,8 @@
               : `等待窗口 · ${platformName}`;
           detail.textContent = status.message || '';
 
+          renderAdapterBadge(status);
+
           editorSel.innerHTML = '<option value="auto">自动检测</option>';
           for (const ed of status.editors || []) {
             const opt = document.createElement('option');
@@ -230,6 +357,10 @@
             opt.textContent = ed.label;
             editorSel.appendChild(opt);
           }
+          const customOpt = document.createElement('option');
+          customOpt.value = 'custom';
+          customOpt.textContent = '自定义命令...';
+          editorSel.appendChild(customOpt);
 
           termSel.innerHTML = '<option value="auto">自动检测</option>';
           for (const tm of status.terminals || []) {
@@ -241,8 +372,15 @@
 
           langSel.value = prefs.language || 'auto';
           editorSel.value = prefs.preferredEditor || 'auto';
+          if (document.activeElement !== customEditorInput) {
+            customEditorInput.value = prefs.customEditorCommand || '';
+          }
+          syncCustomEditorVisibility();
           termSel.value = prefs.preferredTerminal || 'auto';
           altCheck.checked = prefs.altClickOpenDefault !== false;
+          showHeaderCheck.checked = Boolean(prefs.minimalMenuShowHeader);
+          showTerminalCheck.checked = Boolean(prefs.minimalMenuShowTerminal);
+          showMentionCheck.checked = Boolean(prefs.minimalMenuShowMention);
 
           const items = recent.items || [];
           recentList.innerHTML = '';
