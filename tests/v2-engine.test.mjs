@@ -321,6 +321,92 @@ test('P4: filters untrusted UNC workspaceRoots & enforces multi-candidate priori
   assert.equal(externalScheme.reason, 'external_scheme');
 });
 
+test('SPA route & unknown leading-slash guard: /c/<uuid> and /settings never trigger missing_path on win32 or darwin', async () => {
+  const winStat = createMockAsyncStat({
+    'C:\\': { type: 'dir' },
+    'C:\\Repo\\src\\app.ts': { type: 'file' },
+  });
+  const macStat = createMockAsyncStat({
+    '/': { type: 'dir' },
+    '/Users': { type: 'dir' },
+    '/Users/song': { type: 'dir' },
+    '/app/src/index.ts': { type: 'file' },
+  });
+
+  // 1. `/c/<uuid>` on BOTH win32 and darwin returns passthrough (`spa_route`) with ZERO stat calls
+  for (const [plat, statFn] of [
+    ['win32', winStat],
+    ['darwin', macStat],
+  ]) {
+    const syncRes = resolveTarget('/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda', {
+      platform: plat,
+      fsImpl: createMockFs({ '/': { type: 'dir' }, 'C:\\': { type: 'dir' } }),
+    });
+    assert.equal(syncRes.kind, 'passthrough', `sync /c/<uuid> failed on ${plat}`);
+    assert.equal(syncRes.reason, 'spa_route');
+
+    const asyncRes = await resolveTargetAsync('/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda', {
+      platform: plat,
+      asyncStatImpl: statFn,
+    });
+    assert.equal(asyncRes.kind, 'passthrough', `async /c/<uuid> failed on ${plat}`);
+    assert.equal(asyncRes.reason, 'spa_route');
+  }
+  assert.equal(winStat.statCalls.length, 0);
+  assert.equal(macStat.statCalls.length, 0);
+
+  // 2. High-priority SPA route candidate short-circuits lower-priority caret-token
+  const fusedConv = await resolveBestTargetWithEngine({
+    candidates: [
+      { source: 'dom-attr', value: '/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda' },
+      { source: 'caret-token', value: 'src/app.ts' },
+    ],
+    workspaceRoots: ['C:\\Repo'],
+    platform: 'win32',
+    asyncStatImpl: winStat,
+  });
+  assert.equal(fusedConv.kind, 'passthrough');
+  assert.equal(fusedConv.reason, 'spa_route');
+
+  // 3. Generic SPA route `/settings/profile` never produces `missing_path` on win32 or darwin
+  const winSettings = await resolveTargetAsync('/settings/profile', {
+    platform: 'win32',
+    asyncStatImpl: winStat,
+  });
+  assert.equal(winSettings.kind, 'passthrough');
+  const macSettings = await resolveTargetAsync('/settings/profile', {
+    platform: 'darwin',
+    asyncStatImpl: macStat,
+  });
+  assert.equal(macSettings.kind, 'passthrough');
+  assert.equal(macSettings.reason, 'spa_route');
+
+  // 4. Slash commands in inline code (e.g. `/compact`) return `inline_code_text` cleanly
+  const slashCmd = await resolveBestTargetWithEngine({
+    candidates: [{ source: 'inline-code', value: '`/compact`' }],
+    workspaceRoots: ['C:\\Repo'],
+    platform: 'win32',
+    asyncStatImpl: winStat,
+  });
+  assert.equal(slashCmd.kind, 'inline_code_text');
+  assert.equal(slashCmd.text, '/compact');
+
+  // 5. Real macOS missing file under `/Users/...` STILL resolves `missing_path` + `nearestExistingParent`,
+  //    and existing custom root `/app/src/index.ts` in containers STILL resolves `existing_file`!
+  const macMissing = await resolveTargetAsync('/Users/song/deleted.ts', {
+    platform: 'darwin',
+    asyncStatImpl: macStat,
+  });
+  assert.equal(macMissing.kind, 'missing_path');
+  assert.equal(macMissing.nearestExistingParent, '/Users/song');
+
+  const containerExisting = await resolveTargetAsync('/app/src/index.ts', {
+    platform: 'linux',
+    asyncStatImpl: macStat,
+  });
+  assert.equal(containerExisting.kind, 'existing_file');
+});
+
 test('path-resolver: supports parenthesis stack traces, WSL /mnt/<drive>, and encodePathToFileUrl', async () => {
   const mockAsync = createMockAsyncStat({
     'D:\\Proj\\Service.cs': { type: 'file' },

@@ -36,6 +36,10 @@ const DEFAULT_KNOWN_DOC_MEDIA_EXTENSIONS = new Set([
 const EXTERNAL_SLASH_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]+:\/\//;
 const EXTERNAL_COLON_SCHEME_RE = /^(?:mailto|tel|sms|data|javascript|about|urn|blob|cid|news|sidecar|customization|plugin|conversation|vscode):/i;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REAL_POSIX_ROOT_RE =
+  /^\/(?:Users|home|root|tmp|var|opt|etc|Volumes|Applications|Library|System|private|mnt|media|srv|run|usr|bin|sbin|nix|snap|proc|sys|dev|workspace|workspaces)(?:\/|$)/;
+const SPA_UUID_ROUTE_RE =
+  /^\/[a-z0-9_-]{1,32}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[/?#]|$)/i;
 const NON_FILE_BARE_WORDS = new Set([
   'true', 'false', 'null', 'undefined', 'nan', 'infinity',
   'const', 'let', 'var', 'function', 'return', 'import', 'export',
@@ -782,13 +786,48 @@ function prepareTargetCandidate(input, options = {}) {
     };
   }
 
-  // 4. Determine whether candidate is absolute or relative
+  // 4. Determine whether candidate is absolute or relative, and guard against SPA routes (e.g. `/c/<uuid>`)
   const uncCheck = platform === 'win32' ? parseUncPath(candidate) : { isUnc: false };
+  const isSingleSlashRooted =
+    candidate.startsWith('/') && !candidate.startsWith('//') && !uncCheck.isUnc;
+
+  if (!isExplicitUri && isSingleSlashRooted) {
+    const posixBasename = path.posix.basename(candidate);
+    const isKnownPosixRoot = REAL_POSIX_ROOT_RE.test(candidate);
+    if (
+      platform === 'win32' ||
+      SPA_UUID_ROUTE_RE.test(candidate) ||
+      (!isKnownPosixRoot && UUID_RE.test(posixBasename))
+    ) {
+      if (isInlineCode && inlineOriginalText.length > 0) {
+        return {
+          done: true,
+          opts,
+          result: {
+            kind: 'inline_code_text',
+            text: inlineOriginalText,
+          },
+        };
+      }
+      return {
+        done: true,
+        opts,
+        result: {
+          kind: 'passthrough',
+          reason: 'spa_route',
+          raw: trimmed,
+        },
+      };
+    }
+  }
+
   const isWinDriveAbs = /^[A-Za-z]:([\\/]|$)/.test(candidate);
-  const isPosixAbs = candidate.startsWith('/') && !candidate.startsWith('//') && !uncCheck.isUnc;
+  const isPosixAbs = platform !== 'win32' && isSingleSlashRooted;
   const isTrustedUncOrDevice =
     platform === 'win32' && (uncCheck.isUnc || Boolean(uncCheck.isTrustedDevicePath));
   const isAbsoluteTarget = isWinDriveAbs || isPosixAbs || isTrustedUncOrDevice;
+  const allowMissingFallback =
+    !isPosixAbs || isExplicitUri || REAL_POSIX_ROOT_RE.test(candidate);
 
   if (isAbsoluteTarget) {
     explicitPathLike = true;
@@ -862,6 +901,8 @@ function prepareTargetCandidate(input, options = {}) {
     safeWorkspaceRoots,
     isInlineCode,
     isExplicitUri,
+    allowMissingFallback,
+    raw: trimmed,
     inlineOriginalText,
     line,
     column,
@@ -979,6 +1020,20 @@ export function resolveTarget(input, options = {}) {
     return buildUntrustedUncResult(primaryPath, state);
   }
 
+  if (state.allowMissingFallback === false) {
+    if (state.isInlineCode && state.inlineOriginalText.length > 0) {
+      return {
+        kind: 'inline_code_text',
+        text: state.inlineOriginalText,
+      };
+    }
+    return {
+      kind: 'passthrough',
+      reason: 'spa_route',
+      raw: state.raw,
+    };
+  }
+
   const nearestExistingParent = findNearestExistingParentSync(primaryPath, platform, fsImpl, config);
   return buildMissingPathResult(primaryPath, nearestExistingParent, state);
 }
@@ -1019,6 +1074,20 @@ export async function resolveTargetAsync(input, options = {}) {
   const primaryPath = probePaths[0];
   if (isUntrustedUncPath(primaryPath, platform, config)) {
     return buildUntrustedUncResult(primaryPath, state);
+  }
+
+  if (state.allowMissingFallback === false) {
+    if (state.isInlineCode && state.inlineOriginalText.length > 0) {
+      return {
+        kind: 'inline_code_text',
+        text: state.inlineOriginalText,
+      };
+    }
+    return {
+      kind: 'passthrough',
+      reason: 'spa_route',
+      raw: state.raw,
+    };
   }
 
   const nearestExistingParent = await findNearestExistingParentAsync(
@@ -1134,7 +1203,10 @@ export async function resolveBestTargetWithEngine({
       };
     }
 
-    if (res.kind === 'passthrough' && res.reason === 'external_scheme') {
+    if (
+      res.kind === 'passthrough' &&
+      (res.reason === 'external_scheme' || res.reason === 'spa_route')
+    ) {
       if (isHighPriorityExplicit) {
         return {
           ...res,

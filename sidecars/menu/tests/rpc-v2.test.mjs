@@ -772,4 +772,157 @@ test('renderer-client.cjs never hijacks external web/app links even when label c
   assert.equal(preventedFile, true, 'file:// link must be intercepted by Context Menu Plus');
   assert.equal(rpcCalls.length, 1);
   assert.equal(rpcCalls[0].type, 'resolve-target');
+
+  // 4. Conversations sidebar <a href="/c/<uuid>"> item (even if title contains 'src/main.ts') -> MUST NOT preventDefault!
+  rpcCalls.length = 0;
+  caretText = 'src/main.ts';
+  const convAnchor = {
+    nodeType: 1,
+    tagName: 'A',
+    href: 'http://127.0.0.1:51234/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda',
+    textContent: 'Fix src/main.ts bug',
+    getAttribute: (k) => (k === 'href' ? '/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda' : null),
+    closest: () => null,
+  };
+  let preventedConvAnchor = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 40,
+    clientY: 220,
+    target: convAnchor,
+    composedPath: () => [convAnchor],
+    preventDefault: () => {
+      preventedConvAnchor = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedConvAnchor, false, 'Conversations /c/<uuid> anchor must never be hijacked');
+  assert.equal(rpcCalls.length, 0);
+
+  // 5. Conversations React Router item (props.to = '/c/<uuid>' or { pathname }, props.path = '/c/:id') -> MUST NOT preventDefault!
+  const convReactItem = {
+    nodeType: 1,
+    tagName: 'DIV',
+    textContent: 'Antigravity Context Menu',
+    __reactProps$xyz: {
+      to: { pathname: '/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda' },
+      path: '/c/ef629bba-982a-4e7b-ab0d-77a6837b8dda',
+    },
+    getAttribute: () => null,
+    closest: () => null,
+  };
+  let preventedConvReact = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 40,
+    clientY: 250,
+    target: convReactItem,
+    composedPath: () => [convReactItem],
+    preventDefault: () => {
+      preventedConvReact = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedConvReact, false, 'React Router /c/<uuid> item must never be hijacked');
+  assert.equal(rpcCalls.length, 0);
+
+  // 6. Non-chat UI chrome (<aside>, <nav>, [role="navigation"]) -> MUST NOT preventDefault even when text looks like a file!
+  const sidebarDiv = {
+    nodeType: 1,
+    tagName: 'DIV',
+    textContent: 'src/main.ts',
+    getAttribute: () => null,
+    closest: (sel) => (sel.includes('aside') ? { tagName: 'ASIDE' } : null),
+  };
+  let preventedSidebar = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 40,
+    clientY: 300,
+    target: sidebarDiv,
+    composedPath: () => [sidebarDiv],
+    preventDefault: () => {
+      preventedSidebar = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedSidebar, false, 'Sidebar/navigation UI chrome must never be hijacked');
+  assert.equal(rpcCalls.length, 0);
+
+  // 7. Plain prose slash tokens ('Windows/macOS', 'CI/CD', '28/28', 'HTTP/1.1') -> MUST NOT preventDefault!
+  for (const proseToken of ['Windows/macOS', 'CI/CD', '28/28', 'HTTP/1.1']) {
+    caretText = proseToken;
+    const para = {
+      nodeType: 1,
+      tagName: 'P',
+      textContent: `Testing ${proseToken} support`,
+      getAttribute: () => null,
+      closest: () => null,
+    };
+    let preventedProse = false;
+    await listeners.contextmenu({
+      shiftKey: false,
+      clientX: 200,
+      clientY: 200,
+      target: para,
+      composedPath: () => [para],
+      preventDefault: () => {
+        preventedProse = true;
+      },
+      stopImmediatePropagation: () => {},
+    });
+    assert.equal(preventedProse, false, `Plain prose token "${proseToken}" must not eat native right-click`);
+  }
+  assert.equal(rpcCalls.length, 0);
+
+  // 8. Genuine relative file path in chat paragraph ('src/main.ts:42') & React file pill -> MUST intercept!
+  caretText = 'src/main.ts:42';
+  const chatPara = {
+    nodeType: 1,
+    tagName: 'P',
+    textContent: 'See src/main.ts:42 for details',
+    getAttribute: () => null,
+    closest: () => null,
+  };
+  let preventedRelFile = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 240,
+    clientY: 240,
+    target: chatPara,
+    composedPath: () => [chatPara],
+    preventDefault: () => {
+      preventedRelFile = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedRelFile, true, 'Relative file path with extension in chat must be intercepted');
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0].input.candidates[0].value, 'src/main.ts:42');
+
+  // 9. React file pill (props.filePath = 'C:\\repo\\src\\main.ts') -> MUST intercept!
+  caretText = '';
+  const filePill = {
+    nodeType: 1,
+    tagName: 'BUTTON',
+    textContent: 'main.ts',
+    __reactProps$pill: { filePath: 'C:\\repo\\src\\main.ts' },
+    getAttribute: () => null,
+    closest: () => null,
+  };
+  let preventedPill = false;
+  await listeners.contextmenu({
+    shiftKey: false,
+    clientX: 260,
+    clientY: 260,
+    target: filePill,
+    composedPath: () => [filePill],
+    preventDefault: () => {
+      preventedPill = true;
+    },
+    stopImmediatePropagation: () => {},
+  });
+  assert.equal(preventedPill, true, 'React filePath pill in chat must be intercepted');
+  assert.equal(rpcCalls.length, 2);
+  assert.equal(rpcCalls[1].input.candidates[0].value, 'C:\\repo\\src\\main.ts');
 });

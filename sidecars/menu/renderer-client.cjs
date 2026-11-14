@@ -215,24 +215,62 @@
     return Boolean(target.closest('input, textarea, [contenteditable="true"], [role="textbox"]'));
   }
 
-  function isExternalUri(val) {
+  function isInsideExcludedChrome(target) {
+    if (!target || typeof target.closest !== 'function') return false;
+    return Boolean(
+      target.closest(
+        'nav, aside, header, footer, dialog, ' +
+          '[role="navigation"], [role="complementary"], [role="banner"], ' +
+          '[role="tablist"], [role="tab"], [role="toolbar"], ' +
+          '[role="menu"], [role="menubar"], [role="menuitem"], ' +
+          '[role="tree"], [role="treeitem"], [role="listbox"], [role="option"], ' +
+          '[role="dialog"], [role="alertdialog"]'
+      )
+    );
+  }
+
+  var REAL_POSIX_ROOT_RE =
+    /^\/(?:Users|home|root|tmp|var|opt|etc|Volumes|Applications|Library|System|private|mnt|media|srv|run|usr|bin|sbin|nix|snap|proc|sys|dev|workspace|workspaces)\//;
+
+  var RELATIVE_FILE_TAIL_RE =
+    /(?:^|[\\/])(?:\.[a-zA-Z0-9._-]+|[a-zA-Z0-9._-]+\.(?=[a-zA-Z0-9]*[a-zA-Z])[a-zA-Z0-9]{1,12}|Dockerfile|Makefile|CMakeLists\.txt|Gemfile|Podfile|Procfile|Vagrantfile|Justfile|Rakefile|LICENSE|README|CHANGELOG)(?:(?:#L?\d+[^\s]*)|(?::\d+(?::\d+)?)|(?:\(\d+(?:,\d+)?\)))?$/i;
+
+  function isAppRouteOrExternalUri(val) {
     if (typeof val !== 'string') return false;
     var s = val.trim();
     if (!s || /^file:/i.test(s) || /^[a-zA-Z]:[\\/]/.test(s)) return false;
     if (/^[a-zA-Z][a-zA-Z0-9+.-]+:\/\//.test(s)) return true;
-    return /^(?:mailto|tel|sms|data|javascript|about|urn|blob|cid|news|sidecar|customization|plugin|conversation|vscode):/i.test(s);
+    if (
+      /^(?:mailto|tel|sms|data|javascript|about|urn|blob|cid|news|sidecar|customization|plugin|conversation|vscode):/i.test(
+        s
+      )
+    ) {
+      return true;
+    }
+    if (s.charAt(0) === '/' && s.charAt(1) !== '/' && s.indexOf(' ') < 0 && !REAL_POSIX_ROOT_RE.test(s)) {
+      return true;
+    }
+    return false;
   }
 
   function isPathLikeString(val) {
     if (typeof val !== 'string') return false;
     var s = val.trim();
     if (!s || s.length > 2048 || /[\r\n]/.test(s)) return false;
-    if (isExternalUri(s)) return false;
+    if (isAppRouteOrExternalUri(s)) return false;
     if (/^file:\/\//i.test(s)) return true;
     if (/^[a-zA-Z]:[\\/]/.test(s) || /^\\\\[^\\]+\\[^\\]+/.test(s)) return true;
-    if (/^\/(?:Users|home|tmp|var|opt|etc|Volumes|Applications|mnt)\//.test(s)) return true;
+    if (REAL_POSIX_ROOT_RE.test(s)) return true;
     if (/^~[\\/]/.test(s)) return true;
-    if ((s.indexOf('/') >= 0 || s.indexOf('\\') >= 0) && !/^https?:\/\//i.test(s) && s.indexOf(' ') < 0) return true;
+    if (/^\.\.?[\\/]/.test(s) && s.indexOf(' ') < 0) return true;
+    if (
+      s.charAt(0) !== '/' &&
+      (s.indexOf('/') >= 0 || s.indexOf('\\') >= 0) &&
+      s.indexOf(' ') < 0 &&
+      RELATIVE_FILE_TAIL_RE.test(s)
+    ) {
+      return true;
+    }
     return false;
   }
 
@@ -245,24 +283,59 @@
         if (keys[i].indexOf('__reactProps$') === 0) propKey = keys[i];
         else if (keys[i].indexOf('__reactFiber$') === 0) fiberKey = keys[i];
       }
-      var propNames = ['href', 'url', 'externalUrl', 'linkUrl', 'uri', 'fileUri', 'fileUrl', 'filePath', 'path', 'fullPath', 'targetUri', 'artifactPath', 'src'];
-      var externalPropNames = { href: 1, url: 1, externalUrl: 1, linkUrl: 1, uri: 1, targetUri: 1 };
+      var linkPropNames = ['to', 'href', 'url', 'externalUrl', 'linkUrl', 'uri', 'targetUri'];
+      var filePropNames = ['fileUri', 'fileUrl', 'filePath', 'fullPath', 'artifactPath'];
+      var nestedFilePropNames = ['fileUri', 'fileUrl', 'filePath', 'fullPath', 'artifactPath', 'uri', 'path'];
+      var linkText = (el.textContent || '').trim();
+
       var inspectProps = function (props) {
         if (!props || typeof props !== 'object') return;
-        for (var j = 0; j < propNames.length; j++) {
-          var pName = propNames[j];
-          var v = props[pName];
-          if (linkState && externalPropNames[pName] && isExternalUri(v)) {
-            linkState.hasExternalLink = true;
-          } else if (isPathLikeString(v)) {
-            out.push({ source: 'react-prop', value: v.trim(), linkText: (el.textContent || '').trim() });
+        for (var j = 0; j < linkPropNames.length; j++) {
+          var pName = linkPropNames[j];
+          var rawVal = props[pName];
+          var v =
+            typeof rawVal === 'string'
+              ? rawVal
+              : rawVal && typeof rawVal === 'object' && typeof rawVal.pathname === 'string'
+                ? rawVal.pathname
+                : null;
+          if (typeof v !== 'string') continue;
+          var trimmedV = v.trim();
+          if (/^file:/i.test(trimmedV)) {
+            out.push({ source: 'explicit-uri', value: trimmedV, linkText: linkText });
+          } else if (
+            trimmedV.charAt(0) === '#' ||
+            trimmedV.charAt(0) === '?' ||
+            isAppRouteOrExternalUri(trimmedV)
+          ) {
+            if (linkState) linkState.hasExternalLink = true;
+          } else if ((pName === 'uri' || pName === 'targetUri') && isPathLikeString(trimmedV)) {
+            out.push({ source: 'react-prop', value: trimmedV, linkText: linkText });
           }
         }
+
+        for (var f = 0; f < filePropNames.length; f++) {
+          var fv = props[filePropNames[f]];
+          if (typeof fv === 'string' && !isAppRouteOrExternalUri(fv) && isPathLikeString(fv)) {
+            var trimmedFv = fv.trim();
+            out.push({
+              source: /^file:/i.test(trimmedFv) ? 'explicit-uri' : 'react-prop',
+              value: trimmedFv,
+              linkText: linkText,
+            });
+          }
+        }
+
         if (props.file && typeof props.file === 'object') {
-          for (var k = 0; k < propNames.length; k++) {
-            var fv = props.file[propNames[k]];
-            if (isPathLikeString(fv)) {
-              out.push({ source: 'react-prop', value: fv.trim(), linkText: (el.textContent || '').trim() });
+          for (var k = 0; k < nestedFilePropNames.length; k++) {
+            var nfv = props.file[nestedFilePropNames[k]];
+            if (typeof nfv === 'string' && !isAppRouteOrExternalUri(nfv) && isPathLikeString(nfv)) {
+              var trimmedNfv = nfv.trim();
+              out.push({
+                source: /^file:/i.test(trimmedNfv) ? 'explicit-uri' : 'react-prop',
+                value: trimmedNfv,
+                linkText: linkText,
+              });
             }
           }
         }
@@ -271,7 +344,7 @@
       if (propKey) inspectProps(el[propKey]);
       if (fiberKey) {
         var fiber = el[fiberKey];
-        for (var depth = 0; depth < 5 && fiber; depth++) {
+        for (var depth = 0; depth < 3 && fiber; depth++) {
           inspectProps(fiber.memoizedProps);
           fiber = fiber.return;
         }
@@ -350,11 +423,19 @@
 
       if (tag === 'A') {
         anchorEl = node;
-        var href = node.getAttribute('href') || node.href;
-        if (href && /^file:/i.test(href)) {
-          add('explicit-uri', href, (node.textContent || '').trim());
-        } else if (isExternalUri(href)) {
+        var rawHref = (node.getAttribute('href') || '').trim();
+        var propHref = typeof node.href === 'string' ? node.href.trim() : '';
+        if (/^file:/i.test(rawHref) || /^file:/i.test(propHref)) {
+          add('explicit-uri', /^file:/i.test(rawHref) ? rawHref : propHref, (node.textContent || '').trim());
+        } else if (
+          rawHref.charAt(0) === '#' ||
+          rawHref.charAt(0) === '?' ||
+          isAppRouteOrExternalUri(rawHref) ||
+          (!rawHref && isAppRouteOrExternalUri(propHref))
+        ) {
           linkState.hasExternalLink = true;
+        } else if (rawHref && isPathLikeString(rawHref)) {
+          add('dom-attr', rawHref, (node.textContent || '').trim());
         }
       }
 
@@ -367,11 +448,16 @@
 
       var attrs = ['data-file-path', 'data-filepath', 'data-path', 'data-uri', 'data-href', 'title', 'aria-label'];
       for (var a = 0; a < attrs.length; a++) {
-        var av = node.getAttribute(attrs[a]);
-        if ((attrs[a] === 'data-uri' || attrs[a] === 'data-href' || attrs[a] === 'title') && isExternalUri(av)) {
+        var attrName = attrs[a];
+        var av = node.getAttribute(attrName);
+        if (!av) continue;
+        if (
+          (attrName === 'data-uri' || attrName === 'data-href' || attrName === 'data-path' || attrName === 'title') &&
+          isAppRouteOrExternalUri(av)
+        ) {
           linkState.hasExternalLink = true;
         } else if (isPathLikeString(av)) {
-          add(attrs[a] === 'data-uri' || /^file:/i.test(av) ? 'explicit-uri' : 'dom-attr', av, (node.textContent || '').trim());
+          add(attrName === 'data-uri' || /^file:/i.test(av.trim()) ? 'explicit-uri' : 'dom-attr', av, (node.textContent || '').trim());
         }
       }
 
@@ -408,7 +494,11 @@
       clickedCodeText: clickedCodeEl ? (clickedCodeEl.textContent || '').trim() : '',
       anchorText: anchorEl ? (anchorEl.textContent || '').trim() : '',
       selectionText: selectionText,
-      hasExplicitAnchor: Boolean(anchorEl && /^file:/i.test(anchorEl.getAttribute('href') || '')),
+      hasExplicitAnchor: Boolean(
+        anchorEl &&
+          (/^file:/i.test(anchorEl.getAttribute('href') || '') ||
+            (typeof anchorEl.href === 'string' && /^file:/i.test(anchorEl.href)))
+      ),
       hasExternalLink: Boolean(linkState.hasExternalLink),
     };
   }
@@ -667,12 +757,13 @@
     if (event.shiftKey) return;
     var extracted = extractCandidates(event);
 
-    // Do not hijack editable composer inputs unless user clicked an explicit file pill
-    if (isInsideEditable(event.target) && !extracted.hasExplicitAnchor) {
+    // Do not hijack editable composer inputs or non-chat UI chrome (sidebars, nav, menus, tabs, trees)
+    // unless the user right-clicked an explicit file:// anchor
+    if ((isInsideEditable(event.target) || isInsideExcludedChrome(event.target)) && !extracted.hasExplicitAnchor) {
       return;
     }
 
-    // Never hijack external web/app links (e.g. https://, mailto:, customization://, sidecar://)
+    // Never hijack external web/app links or SPA routes (e.g. https://, customization://, /c/<uuid>)
     // even when their display text contains '/' (like 'CenceNtNo9/agy-context-menu') or <code>
     if (extracted.hasExternalLink && !extracted.hasExplicitAnchor) {
       return;
@@ -744,6 +835,8 @@
     if (isInsideEditable(event.target)) return;
 
     var extracted = extractCandidates(event);
+    if (isInsideExcludedChrome(event.target) && !extracted.hasExplicitAnchor) return;
+    if (extracted.hasExternalLink && !extracted.hasExplicitAnchor) return;
     if (!extracted.hasExplicitAnchor && extracted.candidates.length === 0) return;
     // Quick Alt/Option+Click only intercepts explicit links/React chips, never arbitrary inline text
     var hasExplicit = extracted.candidates.some(function (c) {

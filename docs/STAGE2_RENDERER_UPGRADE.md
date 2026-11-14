@@ -259,7 +259,11 @@
     if (event.shiftKey) return;
     var extracted = extractCandidates(event);
 
-    if (isInsideEditable(event.target) && !extracted.hasExplicitAnchor) {
+    if ((isInsideEditable(event.target) || isInsideExcludedChrome(event.target)) && !extracted.hasExplicitAnchor) {
+      return;
+    }
+
+    if (extracted.hasExternalLink && !extracted.hasExplicitAnchor) {
       return;
     }
 
@@ -313,6 +317,8 @@
     if (isInsideEditable(event.target)) return;
 
     var extracted = extractCandidates(event);
+    if (isInsideExcludedChrome(event.target) && !extracted.hasExplicitAnchor) return;
+    if (extracted.hasExternalLink && !extracted.hasExplicitAnchor) return;
     var hasExplicit = extracted.candidates.some(function (c) {
       return c.source === 'explicit-uri' || c.source === 'react-prop';
     });
